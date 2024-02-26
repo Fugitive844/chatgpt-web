@@ -1,22 +1,30 @@
+/* eslint-disable import/order */
 import * as dotenv from 'dotenv'
 import 'isomorphic-fetch'
 import type { ChatGPTAPIOptions, ChatMessage, SendMessageOptions } from 'chatgpt'
-import { ChatGPTAPI, ChatGPTUnofficialProxyAPI } from 'chatgpt'
 import { SocksProxyAgent } from 'socks-proxy-agent'
 import httpsProxyAgent from 'https-proxy-agent'
 import fetch from 'node-fetch'
 import jwt_decode from 'jwt-decode'
 import dayjs from 'dayjs'
+import e from 'express'
 import type { AuditConfig, KeyConfig, UserInfo } from '../storage/model'
 import { Status } from '../storage/model'
 import type { TextAuditService } from '../utils/textAudit'
 import { textAuditServices } from '../utils/textAudit'
+import { ChatGPTAPI, ChatGPTUnofficialProxyAPI } from '../openapi'
 import { getCacheApiKeys, getCacheConfig, getOriginConfig } from '../storage/config'
 import { sendResponse } from '../utils'
 import { hasAnyRole, isNotEmptyString } from '../utils/is'
 import type { ChatContext, ChatGPTUnofficialProxyAPIOptions, JWT, ModelConfig } from '../types'
 import { getChatByMessageId, updateAmountMinusOne, updateRoomAccountId } from '../storage/mongo'
 import type { RequestOptions } from './types'
+
+import https from 'node:https'
+import http from 'node:http'
+import url from 'node:url'
+
+import fs from 'node:fs'
 
 const { HttpsProxyAgent } = httpsProxyAgent
 
@@ -91,8 +99,23 @@ export async function initApi(key: KeyConfig, chatModel: string, maxContextCount
       options.apiBaseUrl = `${OPENAI_API_BASE_URL}/v1`
 
     await setupProxy(options)
+    const chatGPTAPI = new ChatGPTAPI({ ...options })
+    // 保存原来的sendMessage方法引用
+    const originalSendMessage = chatGPTAPI.sendMessage.bind(chatGPTAPI)
 
-    return new ChatGPTAPI({ ...options })
+    // 重写sendMessage方法
+    chatGPTAPI.sendMessage = async function (text, opts = {}): Promise<ChatMessage> {
+    // ...你的定制逻辑...
+
+      // 如果你想调用原始的sendMessage方法，可以这样做：
+      const result = await originalSendMessage(text, opts)
+
+      // 根据你的定制逻辑对result进行处理或直接返回result
+      // 例如，如果你想修改响应内容，你可以修改result对象的属性
+
+      return result // 确保返回类型为Promise<ChatMessage>
+    }
+    return chatGPTAPI
   }
   else {
     const options: ChatGPTUnofficialProxyAPIOptions = {
@@ -111,6 +134,185 @@ export async function initApi(key: KeyConfig, chatModel: string, maxContextCount
     return new ChatGPTUnofficialProxyAPI({ ...options })
   }
 }
+
+async function draw(message: string, openaiKey: string) {
+  const config = (await getCacheConfig())
+  return new Promise<string>((resolve, reject) => {
+    try {
+      const dataReq = {
+        model: 'dall-e-3',
+        prompt: message,
+        n: 1,
+        size: '1024x1024',
+        response_format: 'b64_json',
+      }
+      const options: https.RequestOptions = {
+        hostname: '110.41.155.217',
+        port: 30005,
+        path: '/v1/images/generations',
+        method: 'POST',
+        rejectUnauthorized: false,
+        headers: {
+          'Authorization': `Bearer ${openaiKey}`,
+          'Content-Type': 'application/json',
+        },
+      }
+      const request = https.request(options, (response) => {
+        let responseData = ''
+        response.on('data', (chunk) => {
+          responseData += chunk
+        })
+        response.on('end', () => {
+          try {
+            const jsonResponse = JSON.parse(responseData)
+            console.log('jsonResponse is true')
+            // console.log("jsonResponse is true=="+responseData)
+            const datas = jsonResponse.data
+            // eslint-disable-next-line no-unreachable-loop
+            for (let i = 0; i < datas.length; i++) {
+              const data = datas[i]
+              const base64String = data.b64_json
+              const imageData = Buffer.from(base64String, 'base64')
+              const timestamp = Date.now()
+              const randomNum = Math.floor(Math.random() * 100000)
+              const randomStr = String(randomNum).padStart(5, '0')
+              const fileNmae = `${timestamp}${randomStr}.png`
+              const filePath = process.env.FILE_PATH
+              const filepathSave = `${filePath}/${fileNmae}`
+              fs.writeFile(filepathSave, imageData, (err) => {
+                if (err)
+                  console.error(err)
+                else
+                  console.log(`Image saved successfully!，path==${filepathSave}`)
+              })
+              const url = `${config.siteConfig.siteDomain}/sysfiles/${fileNmae}`
+              const imgMarkdown = `![我的图片](${url})`
+              console.log(`图片加载完成${imgMarkdown}`)
+              // console.log(url)
+              resolve(imgMarkdown)
+              return
+            }
+          }
+          catch (error01) {
+            console.error(`发生错误1${error01}`)
+            resolve('发生未知错误')
+          }
+        })
+      })
+      request.on('error', (error) => {
+        console.error(`发生错误1${error}`)
+        reject(error)
+      })
+      request.write(JSON.stringify(dataReq))
+      request.end()
+    }
+    catch (error) {
+      console.error(`发生错误2${error}`)
+      reject(error)
+    }
+  })
+}
+
+async function draw2(message: string, openaiKey: string) {
+  const config = (await getCacheConfig())
+  return new Promise<string>((resolve, reject) => {
+    try {
+      let urlString = 'https://api.openai.com'
+      if (config.apiBaseUrl != null && config.apiBaseUrl != '')
+        urlString = config.apiBaseUrl
+
+      const parsedUrl = new URL(urlString)
+
+      const hostname = parsedUrl.hostname
+      let port = parsedUrl.port
+      const protocolStr = parsedUrl.protocol
+      const protocol = protocolStr === 'https:' ? https : http
+      if (port === null || port === '') {
+        if (protocolStr === 'https:')
+          port = '443'
+
+        else
+          port = '80'
+      }
+      const options = {
+        hostname,
+        port,
+        path: '/v1/images/generations',
+        method: 'POST',
+        rejectUnauthorized: false,
+        headers: {
+          'Authorization': `Bearer ${openaiKey}`,
+          'Content-Type': 'application/json',
+          'hostname': hostname,
+          // 'Content-Length': Buffer.byteLength(message)
+        },
+      }
+
+      const dataReq = {
+        model: 'dall-e-3',
+        prompt: message,
+        n: 1,
+        size: '1024x1024',
+        response_format: 'b64_json',
+      }
+
+      const request = protocol.request(options, (response) => {
+        let responseData = ''
+        response.on('data', (chunk) => {
+          responseData += chunk
+        })
+        response.on('end', () => {
+          try {
+            const jsonResponse = JSON.parse(responseData)
+            console.log('jsonResponse is true')
+            // console.log("jsonResponse is true=="+responseData)
+            const datas = jsonResponse.data
+            // eslint-disable-next-line no-unreachable-loop
+            for (let i = 0; i < datas.length; i++) {
+              const data = datas[i]
+              const base64String = data.b64_json
+              const imageData = Buffer.from(base64String, 'base64')
+              const timestamp = Date.now()
+              const randomNum = Math.floor(Math.random() * 100000)
+              const randomStr = String(randomNum).padStart(5, '0')
+              const fileNmae = `${timestamp}${randomStr}.png`
+              const filePath = process.env.FILE_PATH
+              const filepathSave = `${filePath}/${fileNmae}`
+              fs.writeFile(filepathSave, imageData, (err) => {
+                if (err)
+                  console.error(err)
+                else
+                  console.log(`Image saved successfully!，path==${filepathSave}`)
+              })
+              // const url = `${config.siteConfig.siteDomain}/sysfiles/${fileNmae}`
+              const url = `/sysfiles/${fileNmae}`
+              const imgMarkdown = `![我的图片](${url})`
+              console.log(`图片加载完成${imgMarkdown}`)
+              // console.log(url)
+              resolve(imgMarkdown)
+              return
+            }
+          }
+          catch (error01) {
+            console.error(`发生错误1${error01}`)
+            resolve('发生未知错误')
+          }
+        })
+      })
+      request.on('error', (error) => {
+        console.error(`发生错误1${error}`)
+        reject(error)
+      })
+      request.write(JSON.stringify(dataReq))
+      request.end()
+    }
+    catch (error) {
+      console.error(`发生错误2${error}`)
+      reject(error)
+    }
+  })
+}
+
 const processThreads: { userId: string; abort: AbortController; messageId: string }[] = []
 async function chatReplyProcess(options: RequestOptions) {
   const model = options.room.chatModel
@@ -133,6 +335,19 @@ async function chatReplyProcess(options: RequestOptions) {
   const { message, lastContext, process, systemMessage, temperature, top_p } = options
 
   try {
+    const startsWithSlash = message.startsWith('/') // 判断是否以斜杠开头
+    if (startsWithSlash) {
+      console.log(`开启画图：${message}`)
+      const imgMarkdown = await draw2(message, key.key)
+      const dataRes = {
+        status: 'Fail',
+        imgtype: 'img',
+        message: imgMarkdown,
+        data: null,
+      }
+      return sendResponse({ type: 'Success', data: dataRes })
+    }
+
     const timeoutMs = (await getCacheConfig()).timeoutMs
     let options: SendMessageOptions = { timeoutMs }
 
@@ -140,6 +355,7 @@ async function chatReplyProcess(options: RequestOptions) {
       if (isNotEmptyString(systemMessage))
         options.systemMessage = systemMessage
       options.completionParams = { model, temperature, top_p }
+      // options.completionParams.max_tokens=128,000
     }
 
     if (lastContext != null) {
@@ -149,7 +365,6 @@ async function chatReplyProcess(options: RequestOptions) {
         options = { ...lastContext }
     }
     const api = await initApi(key, model, maxContextCount)
-
     const abort = new AbortController()
     options.abortSignal = abort.signal
     processThreads.push({ userId, abort, messageId })
@@ -339,7 +554,9 @@ async function setupProxy(options: ChatGPTAPIOptions | ChatGPTUnofficialProxyAPI
       password: isNotEmptyString(config.socksAuth) ? config.socksAuth.split(':')[1] : undefined,
 
     })
+    // @ts-ignore
     options.fetch = (url, options) => {
+      // @ts-ignore
       return fetch(url, { agent, ...options })
     }
   }
@@ -348,7 +565,9 @@ async function setupProxy(options: ChatGPTAPIOptions | ChatGPTUnofficialProxyAPI
       const httpsProxy = config.httpsProxy
       if (httpsProxy) {
         const agent = new HttpsProxyAgent(httpsProxy)
+        // @ts-ignore
         options.fetch = (url, options) => {
+          // @ts-ignore
           return fetch(url, { agent, ...options })
         }
       }
@@ -415,6 +634,7 @@ async function randomKeyConfig(keys: KeyConfig[]): Promise<KeyConfig | null> {
 }
 
 async function getRandomApiKey(user: UserInfo, chatModel: string, accountId?: string): Promise<KeyConfig | undefined> {
+  const apiKeysCachedConfig = await getCacheApiKeys()
   let keys = (await getCacheApiKeys()).filter(d => hasAnyRole(d.userRoles, user.roles))
     .filter(d => d.chatModels.includes(chatModel))
   if (accountId)

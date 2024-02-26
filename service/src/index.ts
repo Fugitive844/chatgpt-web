@@ -1,14 +1,17 @@
+import path from 'node:path'
 import express from 'express'
 import jwt from 'jsonwebtoken'
 import * as dotenv from 'dotenv'
 import { ObjectId } from 'mongodb'
 import { textTokens } from 'gpt-token'
 import speakeasy from 'speakeasy'
+import multer from 'multer'
+import { v4 as uuidv4 } from 'uuid'
 import { TwoFAConfig } from './types'
 import type { AuthJwtPayload, RequestProps } from './types'
 import type { ChatMessage } from './chatgpt'
 import { abortChatProcess, chatConfig, chatReplyProcess, containsSensitiveWords, initAuditService } from './chatgpt'
-import { auth, getUserId } from './middleware/auth'
+import { auth, getUserId, tokenMap } from './middleware/auth'
 import { clearApiKeyCache, clearConfigCache, getApiKeys, getCacheApiKeys, getCacheConfig, getOriginConfig } from './storage/config'
 import type { AuditConfig, ChatInfo, ChatOptions, Config, KeyConfig, MailConfig, SiteConfig, UserConfig, UserInfo } from './storage/model'
 import { AdvancedConfig, Status, UsageResponse, UserRole } from './storage/model'
@@ -435,7 +438,7 @@ router.post('/chat-process', [auth, limiter], async (req, res) => {
       room,
     })
     // return the whole response including usage
-    if (!result.data.detail?.usage) {
+    if (!result.data.detail?.usage && result.data.imgtype == null) {
       if (!result.data.detail)
         result.data.detail = {}
       result.data.detail.usage = new UsageResponse()
@@ -462,6 +465,9 @@ router.post('/chat-process', [auth, limiter], async (req, res) => {
       if (result.data === undefined)
         // eslint-disable-next-line no-unsafe-finally
         return
+      // 增加画图返回
+      if (result.data.text === undefined)
+        result.data.text = result.data.message
 
       if (regenerate && message.options.messageId) {
         const previousResponse = message.previousResponse || []
@@ -723,6 +729,8 @@ router.post('/user-login', authLimiter, async (req, res) => {
       root: user.roles.includes(UserRole.Admin),
       config: user.config,
     } as AuthJwtPayload, config.siteConfig.loginSalt.trim())
+    tokenMap.set(user._id.toString(), jwtToken)
+    tokenMap.set(`${user._id.toString()}time`, Date.now())
     res.send({ status: 'Success', message: '登录成功 | Login successfully', data: { token: jwtToken } })
   }
   catch (error) {
@@ -1085,6 +1093,8 @@ router.post('/setting-base', rootAuth, async (req, res) => {
 
 router.post('/setting-site', rootAuth, async (req, res) => {
   try {
+    console.log('当前用户非管理用户,无法调用管理员接口1111111111')
+
     const config = req.body as SiteConfig
 
     const thisConfig = await getOriginConfig()
@@ -1150,6 +1160,7 @@ router.post('/audit-test', rootAuth, async (req, res) => {
     if (audit.enabled)
       initAuditService(audit)
     const result = await containsSensitiveWords(audit, text)
+    console.log(`敏感词测试检测结果========${result}`)
     if (audit.enabled)
       initAuditService(config.auditConfig)
     res.send({ status: 'Success', message: result ? '含敏感词 | Contains sensitive words' : '不含敏感词 | Does not contain sensitive words.', data: null })
@@ -1256,8 +1267,48 @@ router.post('/statistics/by-day', auth, async (req, res) => {
     res.send({ status: 'Success', message: '', data })
   }
   catch (error) {
+    console.error(error)
     res.send(error)
   }
+})
+
+router.post('/uploadimg2', auth, async (req, res) => {
+  try {
+    const userId = req.headers.userId as string
+    const { title, roomId, chatModel } = req.body as { title: string; roomId: number; chatModel: string }
+    const room = await createChatRoom(userId, title, roomId, chatModel)
+    res.send({ status: 'Success', message: null, data: room })
+  }
+  catch (error) {
+    console.error(error)
+    res.send({ status: 'Fail', message: 'Create error', data: null })
+  }
+})
+
+// 设置 multer 存储配置
+const storage = multer.diskStorage({
+  destination(req, file, cb) {
+    const filePath = process.env.FILE_PATH
+    cb(null, filePath) // 指定存储路径（相对于项目根目录）
+  },
+  filename(req, file, cb) {
+    const fileExtension = path.extname(file.originalname) // 获取文件扩展名
+    const newFileName = uuidv4() + fileExtension
+    cb(null, newFileName) // 使用 uuid 生成文件名，并保留原始文件扩展名
+  },
+})
+const upload = multer({ storage })
+
+router.post('/uploadimg', upload.single('image'), async (req, res) => {
+  // @ts-ignore
+  if (!req.file)
+    res.send({ status: 'Fail', message: 'Please upload a file.', data: null })
+  // 文件上传成功后，req.file 包含了文件信息
+  // 可以从 req.file.path 获取文件存储位置
+  // @ts-ignore
+  const newFileName = req.file.filename // multer 将此属性添加到 req.file 对象中
+  const resultData = `![从感叹号开始为识图标志请勿修改](/sysfiles/${newFileName})`
+  res.send({ status: 'Success', message: 'File uploaded successfully.', data: resultData })
 })
 
 app.use('', router)

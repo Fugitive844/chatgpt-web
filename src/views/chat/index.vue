@@ -70,6 +70,167 @@ dataSources.value.forEach((item, index) => {
     updateChatSome(+uuid, index, { loading: false })
 })
 
+async function handleImgUpload() {
+  // 创建 input element 用于选择文件
+  const inputElement = document.createElement('input');
+  inputElement.setAttribute('type', 'file');
+  inputElement.setAttribute('accept', 'image/*'); // 仅允许选择图片文件
+
+  // 监听文件选择
+  inputElement.addEventListener('change', (event) => {
+    const target = event.target as HTMLInputElement;
+    const file = target.files && target.files[0]
+  //  const file = event.target.files[0];
+    if (!file) return;
+
+    // 创建弹窗和进度条元素
+    const modal = document.createElement('div');
+    const progressBarContainer = document.createElement('div');
+    const progressBar = document.createElement('div');
+    const progressInfo = document.createElement('div');
+    const cancelButton = document.createElement('button');
+
+    // 配置样式和内容
+    modal.style.cssText = `
+      position: fixed;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0, 0, 0, 0.5);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;`;
+
+    progressBarContainer.style.cssText = `
+      width: 300px;
+      background-color: #ddd;
+      padding: 10px;
+      border-radius: 5px;`;
+
+    progressBar.style.cssText = `
+      height: 20px;
+      background-color: #4CAF50;
+      width: 0%;
+      border-radius: 3px;`;
+
+    progressInfo.style.cssText = `
+      margin-top: 10px;
+      font-size: 14px;`;
+
+    cancelButton.textContent = '取消上传';
+    cancelButton.style.cssText = `
+  margin-top: 10px;
+  padding: 8px 15px;
+  color: white;
+  background-color: #f44336; /* 红色背景 */
+  border: none;
+  border-radius: 4px;
+  cursor: pointer; /* 鼠标悬停时显示手型指针 */
+  outline: none; /* 移除焦点时的轮廓 */
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2); /* 添加阴影效果 */
+
+  /* 悬停效果 */
+  transition: background-color 0.3s ease;
+`;
+// 为按钮添加:hover状态以改变悬停时的背景颜色
+cancelButton.addEventListener('mouseover', () => {
+  cancelButton.style.backgroundColor = '#d32f2f'; // 加深颜色
+});
+cancelButton.addEventListener('mouseout', () => {
+  cancelButton.style.backgroundColor = '#f44336'; // 还原颜色
+});
+
+// 当按钮被点击时给予视觉反馈
+cancelButton.addEventListener('mousedown', () => {
+  cancelButton.style.backgroundColor = '#b71c1c'; // 更加深颜色
+});
+cancelButton.addEventListener('mouseup', () => {
+  cancelButton.style.backgroundColor = '#f44336'; // 还原颜色
+});
+
+    // 组装元素
+    modal.appendChild(progressBarContainer);
+    progressBarContainer.appendChild(progressBar);
+    progressBarContainer.appendChild(progressInfo);
+    progressBarContainer.appendChild(cancelButton);
+    document.body.appendChild(modal);
+
+    // 准备 FormData
+    const formData = new FormData();
+    formData.append('image', file); // 根据上传接口的要求可能需要更改字段名
+
+    // 创建 XMLHttpRequest 对象
+    const xhr = new XMLHttpRequest();
+
+    // 开始时间用于计算速度
+    const startTime = Date.now();
+
+    // 取消上传事件处理
+    cancelButton.onclick = () => {
+      xhr.abort(); // 取消上传请求
+      document.body.removeChild(modal); // 移除弹窗
+    };
+
+    // 上传进度事件
+    xhr.upload.addEventListener('progress', (e) => {
+      if (e.lengthComputable) {
+        const percentComplete = e.loaded / e.total * 100;
+        progressBar.style.width = `${percentComplete.toFixed(2)}%`;
+
+        // const loadedMB = (e.loaded / (1024 * 1024)).toFixed(2);
+        // const totalMB = (e.total / (1024 * 1024)).toFixed(2);
+           // 先将字节转换为MB，但不使用toFixed，确保是数字类型
+        const loadedMB = e.loaded / (1024 * 1024);
+        const totalMB = e.total / (1024 * 1024)
+        const remainingMB = (totalMB - loadedMB).toFixed(2);
+
+        // 计算速度
+        const speed = e.loaded / ((Date.now() - startTime) / 1000);
+        const speedMBps = (speed / (1024 * 1024)).toFixed(2);
+
+        // 更新进度信息
+        progressInfo.textContent = `总大小: ${totalMB} MB, 已上传: ${loadedMB} MB, 剩余: ${remainingMB} MB, 速度: ${speedMBps} MB/s, 进度: ${percentComplete.toFixed(2)}%`;
+      }
+    });
+
+    // 请求完成或发生错误时移除弹窗
+    xhr.onloadend = xhr.onerror = () => {
+      document.body.removeChild(modal);
+    };
+
+    xhr.onreadystatechange = async () => {
+      if (xhr.readyState === 4 && xhr.status === 200) {
+        try {
+          const data = JSON.parse(xhr.responseText);
+          // 将data值写入prompt文本框
+          if (prompt.value == null || prompt.value.trim().length === 0)
+              prompt.value = `请详细介绍这张图片${data.data}`;
+            else
+              prompt.value = prompt.value + data.data;
+        } catch (error) {
+          console.error('Error parsing response:', error);
+          alert(`Error parsing response: ${error}`);
+        }
+      } else if (xhr.readyState === 4 && xhr.status !== 200) {
+        console.error('Error uploading image:', xhr.statusText);
+        alert(`Error uploading image: ${xhr.statusText}`);
+      }
+    };
+
+    // 设置请求方法和上传地址
+    xhr.open('POST', '/api/uploadimg', true);
+    
+    // 发送包含文件的表单数据
+    xhr.send(formData);
+  });
+
+  // 模拟点击以打开文件选择对话框
+  inputElement.click();
+}
+
+
 function handleSubmit() {
   onConversation()
 }
@@ -717,6 +878,13 @@ onUnmounted(() => {
                 />
               </template>
             </NAutoComplete>
+            <NButton type="primary" @click="handleImgUpload">
+              <template #icon>
+                <span class="dark:text-black">
+                  <SvgIcon icon="ri:image-add-line" />
+                </span>
+              </template>
+            </NButton>
             <NButton type="primary" :disabled="buttonDisabled" @click="handleSubmit">
               <template #icon>
                 <span class="dark:text-black">
